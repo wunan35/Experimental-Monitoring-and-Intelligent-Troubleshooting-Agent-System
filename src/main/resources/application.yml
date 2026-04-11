@@ -1,0 +1,230 @@
+server:
+  port: 9901
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+file:
+  upload:
+    path: ./uploads
+    allowed-extensions: txt,md
+
+milvus:
+  host: localhost
+  port: 19530
+  username: ""
+  password: ""
+  database: default
+  timeout: 10000
+
+# Spring AI Alibaba DashScope 配置
+spring:
+  application:
+    name: agent-service
+
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}  # 从环境变量 DASHSCOPE_API_KEY 读取，必需
+      chat:
+        options:
+          timeout: 180000  # 超时时间180秒（3分钟）
+      retry:
+        max-attempts: 3  # 最大重试次数
+        backoff:
+          initial-interval: 2000  # 初始重试间隔2秒
+          multiplier: 2  # 重试间隔倍数
+          max-interval: 10000  # 最大重试间隔10秒
+
+    # Spring AI MCP 客户端配置
+    # 如果使用mock数据，请注释这部分内容
+    mcp:
+      client:
+        enabled: true
+        name: tencent-mcp-server
+        version: 1.0.0
+        request-timeout: 60s
+        type: ASYNC
+        sse:
+          connections:
+            tencent-cls:
+              url: https://mcp-api.tencent-cloud.com
+              sse-endpoint: ${MCP_SSE_ENDPOINT:}  # MCP SSE端点，从环境变量读取
+
+  # Redis配置 - 会话存储和缓存
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+          max-wait: -1ms
+
+# 阿里云 DashScope Embedding API 配置
+dashscope:
+  api:
+    key: ${DASHSCOPE_API_KEY:}  # 从环境变量读取，与上面共用同一个API Key
+  embedding:
+    model: text-embedding-v4  # 阿里云文本向量化模型
+
+# 文档分片配置
+document:
+  chunk:
+    max-size: 800  # 每个分片最大字符数
+    overlap: 100   # 分片之间的重叠字符数
+
+# RAG 配置
+rag:
+  top-k: 3  # 检索返回的最相似文档数量
+  model: "qwen3-max"  # 大语言模型名称
+
+# 土木实验监控系统配置
+experiment:
+  data-source:
+    url: http://localhost:8080/api/experiment/alerts
+    timeout: 10  # 超时时间（秒）
+    mock-enabled: false  # 是否启用 Mock 模式（用于测试）
+  logs:
+    mock-enabled: false  # 是否启用 Mock 模式（用于测试，设为 true 返回与实验告警关联的模拟日志数据）
+
+# 会话存储配置
+session:
+  storage:
+    type: ${SESSION_STORAGE_TYPE:local}  # local 或 redis
+    expire-seconds: ${SESSION_EXPIRE_SECONDS:1800}  # 会话过期时间（秒）
+    redis-key-prefix: "agent:session:"
+    max-message-pairs: 6  # 最大历史消息对数
+
+# Prompt 配置（支持版本管理）
+prompt:
+  version: v1
+  templates:
+    chat-system:
+      version: v1
+      description: 标准对话系统提示词
+      enabled: true
+      content: |
+        你是一个专业的土木实验智能助手，可以获取当前时间、查询土木工程规范文档、搜索实验知识库，以及查询实验异常告警信息。
+        当用户询问时间相关问题时，使用 getCurrentDateTime 工具。
+        当用户需要查询土木工程规范、标准、技术指南或实验处理方法时，使用 queryInternalDocs 工具。
+        当用户需要查询实验异常告警、监测数据或实验状态时，使用 queryExperimentAlerts 工具。
+        当用户需要查询实验过程日志、设备操作记录或实验事件时，使用 queryExperimentLogs 工具。
+    planner:
+      version: v1
+      description: Planner Agent系统提示词
+      enabled: true
+      content: |
+        你是土木实验分析规划Agent，负责分析实验告警、制定排查步骤。
+        严格禁止编造数据，只能引用工具返回的真实内容。
+    executor:
+      version: v1
+      description: Executor Agent系统提示词
+      enabled: true
+      content: |
+        你是 Executor Agent，负责执行 Planner 规划的步骤。
+        以 JSON 形式返回执行状态、证据以及给 Planner 的建议。
+    supervisor:
+      version: v1
+      description: Supervisor Agent系统提示词
+      enabled: true
+      content: |
+        你是土木实验监控 Supervisor，负责调度 planner_agent 与 executor_agent。
+
+# 工具调用治理配置
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 30s
+        permittedNumberOfCallsInHalfOpenState: 3
+    instances:
+      tool-execution:
+        baseConfig: default
+  ratelimiter:
+    configs:
+      default:
+        limitForPeriod: 10
+        limitRefreshPeriod: 1s
+        timeoutDuration: 5s
+    instances:
+      tool-execution:
+        baseConfig: default
+  retry:
+    configs:
+      default:
+        maxAttempts: 3
+        waitDuration: 1s
+        enableExponentialBackoff: true
+        exponentialBackoffMultiplier: 2
+    instances:
+      tool-execution:
+        baseConfig: default
+
+# Agent 并发控制配置
+agent:
+  concurrency:
+    max-concurrent: 10
+    queue-capacity: 100
+    timeout-seconds: 300
+
+# 线程池配置
+thread-pool:
+  core-size: 5
+  max-size: 20
+  keep-alive-seconds: 60
+  queue-capacity: 100
+  sse-core-size: 10
+  sse-max-size: 50
+
+# SSE 心跳配置
+sse:
+  heartbeat-interval-ms: 30000  # 心跳间隔30秒
+
+# CORS 安全配置
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080}
+  allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+  allowed-headers: "*"
+  allow-credentials: true
+  max-age: 3600
+
+# API 限流配置
+rate-limit:
+  chat:
+    limit-for-period: 10        # 每周期限制数
+    limit-refresh-period: 1s    # 刷新周期
+    timeout-duration: 5s        # 等待超时
+  aiops:
+    limit-for-period: 3         # AI Ops 较耗资源，限制更严格
+    limit-refresh-period: 1m    # 每分钟
+    timeout-duration: 10s
+  upload:
+    limit-for-period: 5
+    limit-refresh-period: 1m
+    timeout-duration: 5s
+
+# Spring Boot Actuator 配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+    prometheus:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    export:
+      prometheus:
+        enabled: true
