@@ -145,6 +145,20 @@
             <artifactId>spring-ai-starter-mcp-client-webflux</artifactId>
         </dependency>
 
+        <!-- ONNX Runtime Java - 用于BGE-Reranker-large模型推理 -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>1.18.0</version>
+        </dependency>
+
+        <!-- HuggingFace Tokenizers - 文本分词器 -->
+        <dependency>
+            <groupId>ai.djl.huggingface</groupId>
+            <artifactId>tokenizers</artifactId>
+            <version>0.23.0</version>
+        </dependency>
+
         <!-- Spring Data Redis - 会话存储和缓存 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

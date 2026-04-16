@@ -43,6 +43,9 @@ public class VectorSearchService {
     @Autowired(required = false)
     private AgentMetricsService metricsService;
 
+    @Autowired(required = false)
+    private RerankerService rerankerService;
+
     /**
      * 搜索相似文档
      *
@@ -118,7 +121,20 @@ public class VectorSearchService {
                 searchCacheService.putSearchResult(query, topK, cachedResults);
             }
 
-            // 4. 记录指标
+            // 4. 调用Reranker重排序
+            if (rerankerService != null && rerankerService.isEnabled()) {
+                try {
+                    long rerankStart = System.currentTimeMillis();
+                    results = rerankerService.rerank(query, results);
+                    long rerankDuration = System.currentTimeMillis() - rerankStart;
+                    logger.info("Reranker重排序完成, 返回top{}个结果, 耗时: {}ms", results.size(), rerankDuration);
+                } catch (Exception e) {
+                    logger.warn("Reranker重排序失败，使用原始结果: {}", e.getMessage());
+                    // 降级：使用原始搜索结果，不中断流程
+                }
+            }
+
+            // 5. 记录指标
             long duration = System.currentTimeMillis() - startTime;
             if (metricsService != null) {
                 if (timer != null) {

@@ -32,6 +32,8 @@ public class AgentMetricsService {
     public static final String VECTOR_SEARCH_DURATION = "agent.vector.search.duration";
     public static final String VECTOR_EMBEDDING_TOTAL = "agent.vector.embedding.total";
     public static final String VECTOR_EMBEDDING_DURATION = "agent.vector.embedding.duration";
+    public static final String RERANKER_TOTAL = "agent.reranker.total";
+    public static final String RERANKER_DURATION = "agent.reranker.duration";
     public static final String SESSION_ACTIVE_COUNT = "agent.session.active.count";
 
     public AgentMetricsService(MeterRegistry meterRegistry) {
@@ -164,6 +166,37 @@ public class AgentMetricsService {
             .register(meterRegistry)
             .record(duration);
         logger.debug("Recorded vector embedding duration: {}ms for {} texts", duration.toMillis(), textCount);
+    }
+
+    // ==================== Reranker 指标 ====================
+
+    /**
+     * 记录Reranker重排序请求
+     *
+     * @param count 重排序调用次数
+     * @param resultCount 返回的结果数量
+     */
+    public void recordRerank(int count, int resultCount) {
+        Counter.builder(RERANKER_TOTAL)
+            .tag("result_count", String.valueOf(resultCount))
+            .description("Total number of reranker requests")
+            .register(meterRegistry)
+            .increment(count);
+        logger.debug("Recorded reranker: count={}, resultCount={}", count, resultCount);
+    }
+
+    /**
+     * 记录Reranker重排序耗时
+     *
+     * @param duration 耗时
+     * @param count 重排序调用次数
+     */
+    public void recordRerankDuration(Duration duration, int count) {
+        Timer.builder(RERANKER_DURATION)
+            .description("Reranker duration")
+            .register(meterRegistry)
+            .record(duration);
+        logger.debug("Recorded reranker duration: {}ms", duration.toMillis());
     }
 
     // ==================== 会话指标 ====================
