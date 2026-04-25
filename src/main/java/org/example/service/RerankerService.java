@@ -1,7 +1,10 @@
 package org.example.service;
 
-import ai.onnxruntime.*;
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
+import ai.onnxruntime.OnnxTensor;
+import ai.onnxruntime.OnnxValue;
+import ai.onnxruntime.OrtEnvironment;
+import ai.onnxruntime.OrtSession;
 import org.example.service.cache.RerankerCacheService;
 import org.example.service.metrics.AgentMetricsService;
 import org.slf4j.Logger;
@@ -16,12 +19,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
- * Reranker重排序服务
- * 使用 BGE-Reranker-large 模型对搜索结果进行重排序
+ * Reranks vector-search candidates with BGE-Reranker-large.
  */
 @Service
 public class RerankerService {
@@ -43,6 +50,15 @@ public class RerankerService {
     @Value("${reranker.max-results-to-rerank:50}")
     private int maxResultsToRerank;
 
+    @Value("${reranker.max-sequence-length:512}")
+    private int maxSequenceLength;
+
+    @Value("${reranker.max-query-tokens:128}")
+    private int maxQueryTokens;
+
+    @Value("${reranker.max-document-tokens:384}")
+    private int maxDocumentTokens;
+
     @Autowired(required = false)
     private RerankerCacheService cacheService;
 
@@ -57,37 +73,27 @@ public class RerankerService {
     @PostConstruct
     public void init() {
         if (!enabled) {
-            logger.info("Reranker已禁用，跳过模型加载");
+            logger.info("Reranker disabled, skipping model load");
             return;
         }
 
         try {
-            // 1. 加载Tokenizer
-            logger.info("开始加载Tokenizer: {}", modelPath);
+            logger.info("Loading reranker tokenizer: {}", modelPath);
             try {
                 tokenizer = HuggingFaceTokenizer.newInstance(modelPath);
-                logger.info("Tokenizer加载成功");
             } catch (Exception e) {
-                logger.warn("加载Tokenizer失败，使用默认配置: {}", e.getMessage());
-                // 使用默认tokenizer
+                logger.warn("Failed to load tokenizer from {}, falling back to BAAI/bge-reranker-large: {}", modelPath, e.getMessage());
                 tokenizer = HuggingFaceTokenizer.newInstance("BAAI/bge-reranker-large");
             }
 
-            // 2. 加载ONNX模型
-            logger.info("开始加载ONNX模型: {}", modelPath);
             Path modelFilePath = Paths.get(modelPath, "model.onnx");
-
-            // 检查本地模型是否存在
             if (!Files.exists(modelFilePath)) {
-                logger.warn("本地模型文件不存在: {}, 使用内置配置", modelFilePath);
-                // 尝试使用环境变量或默认路径
                 String envPath = System.getenv("RERANKER_MODEL_PATH");
                 if (envPath != null) {
                     modelFilePath = Paths.get(envPath, "model.onnx");
-                    if (!Files.exists(modelFilePath)) {
-                        logger.warn("环境变量指定的模型路径也不存在: {}", envPath);
-                        throw new IOException("模型文件不存在，请配置正确的reranker.model-path或设置RERANKER_MODEL_PATH环境变量");
-                    }
+                }
+                if (!Files.exists(modelFilePath)) {
+                    throw new IOException("Reranker model.onnx not found. Configure reranker.model-path or RERANKER_MODEL_PATH.");
                 }
             }
 
@@ -97,52 +103,44 @@ public class RerankerService {
             options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.PARALLEL);
 
             session = ortEnvironment.createSession(modelFilePath.toString(), options);
-
-            // 输入输出信息
-            logger.info("ONNX模型加载成功");
-            logger.info("模型输入: {}", session.getInputNames());
-            logger.info("模型输出: {}", session.getOutputNames());
-
             initialized = true;
-            logger.info("BGE-Reranker-large 模型初始化完成，topK: {}, maxResults: {}", topK, maxResultsToRerank);
+            logger.info(
+                    "BGE reranker initialized. topK={}, maxResults={}, maxSequenceLength={}",
+                    topK, maxResultsToRerank, maxSequenceLength);
 
         } catch (Exception e) {
-            logger.error("BGE-Reranker-large 模型加载失败，reranker将被禁用", e);
+            logger.error("Failed to load BGE reranker, reranker will be disabled", e);
             initialized = false;
         }
     }
 
-    /**
-     * 检查reranker是否可用
-     */
     public boolean isEnabled() {
         return enabled && initialized;
     }
 
-    /**
-     * 对搜索结果进行重排序
-     * 返回topK个最相关的结果
-     *
-     * @param query 查询文本
-     * @param results 原始搜索结果
-     * @return 重排序后的结果（仅返回topK个）
-     */
     public List<VectorSearchService.SearchResult> rerank(
             String query,
             List<VectorSearchService.SearchResult> results) {
+        return rerank(query, results, topK);
+    }
 
-        // 1. 检查模型是否可用
+    public List<VectorSearchService.SearchResult> rerank(
+            String query,
+            List<VectorSearchService.SearchResult> results,
+            int finalTopK) {
+
         if (!isEnabled()) {
-            logger.debug("Reranker未启用，返回原始结果");
+            return limit(results, finalTopK);
+        }
+
+        if (results == null || results.isEmpty()) {
             return results;
         }
 
-        // 2. 检查缓存
         if (cacheEnabled && cacheService != null) {
             Optional<List<RerankerCacheService.CachedRankResult>> cached =
-                cacheService.getRerankResult(query, results.size());
+                    cacheService.getRerankResult(query, results.size(), finalTopK);
             if (cached.isPresent()) {
-                logger.debug("使用缓存的重排序结果");
                 return convertFromCached(cached.get());
             }
         }
@@ -150,144 +148,161 @@ public class RerankerService {
         long startTime = System.currentTimeMillis();
 
         try {
-            // 3. 限制重排序数量（性能优化）
             List<VectorSearchService.SearchResult> toRerank =
-                results.stream().limit(maxResultsToRerank).collect(Collectors.toList());
+                    results.stream().limit(maxResultsToRerank).collect(Collectors.toList());
 
-            if (toRerank.isEmpty()) {
-                logger.warn("没有结果需要重排序");
-                return results;
-            }
-
-            // 4. Tokenize：构建query-doc pairs
-            List<String> pairs = new ArrayList<>();
-            for (VectorSearchService.SearchResult result : toRerank) {
-                // BGE-Reranker-large 格式: "query [SEP] doc"
-                pairs.add(query + " [SEP] " + result.getContent());
-            }
-
-            logger.debug("开始对 {} 个结果进行tokenization", pairs.size());
-
-            // 使用tokenizer编码 - 单个编码处理
             List<long[]> inputIdsList = new ArrayList<>();
             List<long[]> attentionMaskList = new ArrayList<>();
             int maxLen = 0;
 
-            for (String pair : pairs) {
-                var encoding = tokenizer.encode(pair);
+            for (VectorSearchService.SearchResult result : toRerank) {
+                EncodedPair encodedPair = encodePair(query, result.getContent());
+                inputIdsList.add(encodedPair.inputIds);
+                attentionMaskList.add(encodedPair.attentionMask);
+                maxLen = Math.max(maxLen, encodedPair.inputIds.length);
+            }
 
-                // 提取 input_ids 和 attention_mask
-                long[] ids = encoding.getIds();
-                long[] mask = encoding.getAttentionMask();
+            long[][] inputIds = new long[toRerank.size()][maxLen];
+            long[][] attentionMask = new long[toRerank.size()][maxLen];
 
-                inputIdsList.add(ids);
-                attentionMaskList.add(mask);
+            for (int i = 0; i < toRerank.size(); i++) {
+                long[] ids = inputIdsList.get(i);
+                long[] mask = attentionMaskList.get(i);
+                System.arraycopy(ids, 0, inputIds[i], 0, ids.length);
+                System.arraycopy(mask, 0, attentionMask[i], 0, mask.length);
+            }
 
-                // 记录最大长度
-                if (ids.length > maxLen) {
-                    maxLen = ids.length;
+            Map<String, OnnxTensor> inputs = new HashMap<>();
+            try (OnnxTensor inputIdsTensor = OnnxTensor.createTensor(ortEnvironment, inputIds);
+                 OnnxTensor attentionMaskTensor = OnnxTensor.createTensor(ortEnvironment, attentionMask)) {
+
+                inputs.put("input_ids", inputIdsTensor);
+                inputs.put("attention_mask", attentionMaskTensor);
+
+                try (OrtSession.Result ortResult = session.run(inputs)) {
+                    float[] scores = extractScores(ortResult.get(0), toRerank.size());
+                    List<IndexedResult> indexedResults = new ArrayList<>();
+                    for (int i = 0; i < toRerank.size(); i++) {
+                        indexedResults.add(new IndexedResult(toRerank.get(i), scores[i]));
+                    }
+
+                    indexedResults.sort((a, b) -> Float.compare(b.score, a.score));
+
+                    List<VectorSearchService.SearchResult> reranked = indexedResults.stream()
+                            .limit(finalTopK)
+                            .map(ir -> {
+                                VectorSearchService.SearchResult result = ir.result;
+                                result.setScore(ir.score);
+                                return result;
+                            })
+                            .collect(Collectors.toList());
+
+                    if (cacheEnabled && cacheService != null) {
+                        cacheService.putRerankResult(query, results.size(), finalTopK, convertToCached(reranked));
+                    }
+
+                    long duration = System.currentTimeMillis() - startTime;
+                    if (metricsService != null) {
+                        metricsService.recordRerank(1, reranked.size());
+                        metricsService.recordRerankDuration(Duration.ofMillis(duration), 1);
+                    }
+
+                    logger.info("Reranker completed, input={}, returned={}, duration={}ms", toRerank.size(), reranked.size(), duration);
+                    return reranked;
                 }
             }
 
-            // 创建固定长度的数组用于padding
-            long[][] inputIds = new long[pairs.size()][maxLen];
-            long[][] attentionMask = new long[pairs.size()][maxLen];
-
-            // 填充数组，不足长度用0填充
-            for (int i = 0; i < pairs.size(); i++) {
-                long[] ids = inputIdsList.get(i);
-                long[] mask = attentionMaskList.get(i);
-
-                System.arraycopy(ids, 0, inputIds[i], 0, ids.length);
-                System.arraycopy(mask, 0, attentionMask[i], 0, mask.length);
-
-                // padding部分已经是0
-            }
-
-            logger.debug("Tokenization完成，最大序列长度: {}", maxLen);
-
-            // 5. 调用ONNX模型计算相关性分数
-            Map<String, OnnxTensor> inputs = new HashMap<>();
-
-            // 创建 OnnxTensor 需要指定正确的类型和形状
-            OnnxTensor inputIdsTensor = OnnxTensor.createTensor(
-                ortEnvironment,
-                inputIds
-            );
-            OnnxTensor attentionMaskTensor = OnnxTensor.createTensor(
-                ortEnvironment,
-                attentionMask
-            );
-
-            inputs.put("input_ids", inputIdsTensor);
-            inputs.put("attention_mask", attentionMaskTensor);
-
-            logger.debug("开始调用ONNX模型推理...");
-            OrtSession.Result ortResult = session.run(inputs);
-
-            // 获取输出分数 - BGE模型输出是 [batch_size, 1] 或 [batch_size]
-            OnnxValue outputValue = ortResult.get(0);
-            Object output = outputValue.getValue();
-
-            float[] scores;
-            if (output instanceof float[][]) {
-                scores = ((float[][]) output)[0];
-            } else if (output instanceof float[]) {
-                scores = (float[]) output;
-            } else {
-                throw new RuntimeException("不支持的输出类型: " + output.getClass());
-            }
-
-            logger.debug("ONNX模型推理完成，输出分数数量: {}", scores.length);
-
-            // 6. 根据分数重新排序
-            List<IndexedResult> indexedResults = new ArrayList<>();
-            for (int i = 0; i < toRerank.size(); i++) {
-                indexedResults.add(new IndexedResult(toRerank.get(i), i, scores[i]));
-            }
-
-            // 按分数降序排序
-            indexedResults.sort((a, b) -> Float.compare(b.score, a.score));
-
-            // 7. 只返回topK个结果
-            List<VectorSearchService.SearchResult> reranked = indexedResults.stream()
-                .limit(topK)
-                .map(ir -> {
-                    VectorSearchService.SearchResult result = ir.result;
-                    result.setScore(ir.score);
-                    return result;
-                })
-                .collect(Collectors.toList());
-
-            // 8. 缓存结果
-            if (cacheEnabled && cacheService != null) {
-                List<RerankerCacheService.CachedRankResult> cachedResults = convertToCached(reranked);
-                cacheService.putRerankResult(query, results.size(), cachedResults);
-            }
-
-            long duration = System.currentTimeMillis() - startTime;
-
-            // 9. 记录指标
-            if (metricsService != null) {
-                metricsService.recordRerank(1, reranked.size());
-                metricsService.recordRerankDuration(Duration.ofMillis(duration), 1);
-            }
-
-            logger.info("Reranker重排序完成，输入{}个，返回top{}个，耗时{}ms",
-                toRerank.size(), topK, duration);
-
-            return reranked;
-
         } catch (Exception e) {
-            logger.error("Reranker重排序失败，使用原始结果", e);
-            // 降级：返回原始结果的前topK个
-            return results.stream().limit(topK).collect(Collectors.toList());
+            logger.error("Reranker failed, falling back to vector order", e);
+            return limit(results, finalTopK);
         }
     }
 
-    /**
-     * 将缓存结果转换为SearchResult列表
-     */
+    private EncodedPair encodePair(String query, String document) {
+        String limitedQuery = limitTextByTokens(query, maxQueryTokens);
+        String limitedDocument = limitTextByTokens(document, maxDocumentTokens);
+
+        var encoding = tokenizer.encode(limitedQuery, limitedDocument);
+        long[] ids = truncate(encoding.getIds(), maxSequenceLength);
+        long[] mask = truncate(encoding.getAttentionMask(), ids.length);
+        return new EncodedPair(ids, mask);
+    }
+
+    private String limitTextByTokens(String text, int maxTokens) {
+        if (text == null || text.isEmpty() || maxTokens <= 0) {
+            return "";
+        }
+
+        try {
+            List<String> tokens = tokenizer.tokenize(text);
+            if (tokens.size() <= maxTokens) {
+                return text;
+            }
+            return tokenizer.buildSentence(tokens.subList(0, maxTokens));
+        } catch (Exception e) {
+            int maxChars = Math.min(text.length(), Math.max(1, maxTokens) * 4);
+            return text.substring(0, maxChars);
+        }
+    }
+
+    private long[] truncate(long[] values, int maxLength) {
+        if (values.length <= maxLength) {
+            return values;
+        }
+        return Arrays.copyOf(values, maxLength);
+    }
+
+    private float[] extractScores(OnnxValue outputValue, int expectedCount) throws Exception {
+        Object output = outputValue.getValue();
+
+        if (output instanceof float[]) {
+            float[] scores = (float[]) output;
+            validateScoreCount(scores.length, expectedCount);
+            return scores;
+        }
+
+        if (output instanceof float[][]) {
+            float[][] matrix = (float[][]) output;
+            float[] scores = new float[expectedCount];
+
+            if (matrix.length == expectedCount) {
+                for (int i = 0; i < expectedCount; i++) {
+                    if (matrix[i].length == 0) {
+                        throw new IllegalStateException("Empty reranker score row at index " + i);
+                    }
+                    scores[i] = matrix[i][0];
+                }
+                return scores;
+            }
+
+            if (matrix.length == 1 && matrix[0].length == expectedCount) {
+                return matrix[0];
+            }
+
+            throw new IllegalStateException(
+                    "Unexpected reranker output shape: [" + matrix.length + ", "
+                            + (matrix.length == 0 ? 0 : matrix[0].length) + "]");
+        }
+
+        throw new IllegalStateException("Unsupported reranker output type: " + output.getClass());
+    }
+
+    private void validateScoreCount(int scoreCount, int expectedCount) {
+        if (scoreCount < expectedCount) {
+            throw new IllegalStateException(
+                    "Reranker returned too few scores: expected " + expectedCount + ", got " + scoreCount);
+        }
+    }
+
+    private List<VectorSearchService.SearchResult> limit(
+            List<VectorSearchService.SearchResult> results,
+            int finalTopK) {
+        if (results == null) {
+            return List.of();
+        }
+        return results.stream().limit(finalTopK).collect(Collectors.toList());
+    }
+
     private List<VectorSearchService.SearchResult> convertFromCached(
             List<RerankerCacheService.CachedRankResult> cachedResults) {
         List<VectorSearchService.SearchResult> results = new ArrayList<>();
@@ -302,34 +317,36 @@ public class RerankerService {
         return results;
     }
 
-    /**
-     * 将SearchResult列表转换为缓存格式
-     */
     private List<RerankerCacheService.CachedRankResult> convertToCached(
             List<VectorSearchService.SearchResult> results) {
         List<RerankerCacheService.CachedRankResult> cachedResults = new ArrayList<>();
         for (VectorSearchService.SearchResult result : results) {
             cachedResults.add(new RerankerCacheService.CachedRankResult(
-                result.getId(),
-                result.getContent(),
-                result.getScore(),
-                result.getMetadata()
+                    result.getId(),
+                    result.getContent(),
+                    result.getScore(),
+                    result.getMetadata()
             ));
         }
         return cachedResults;
     }
 
-    /**
-     * 辅助类：带索引的结果
-     */
-    private static class IndexedResult {
-        VectorSearchService.SearchResult result;
-        int index;
-        float score;
+    private static class EncodedPair {
+        private final long[] inputIds;
+        private final long[] attentionMask;
 
-        IndexedResult(VectorSearchService.SearchResult result, int index, float score) {
+        private EncodedPair(long[] inputIds, long[] attentionMask) {
+            this.inputIds = inputIds;
+            this.attentionMask = attentionMask;
+        }
+    }
+
+    private static class IndexedResult {
+        private final VectorSearchService.SearchResult result;
+        private final float score;
+
+        private IndexedResult(VectorSearchService.SearchResult result, float score) {
             this.result = result;
-            this.index = index;
             this.score = score;
         }
     }

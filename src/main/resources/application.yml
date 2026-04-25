@@ -84,6 +84,11 @@ rag:
   top-k: 3  # 检索返回的最相似文档数量
   model: "qwen3-max"  # 大语言模型名称
 
+# Retrieval candidate configuration. The final result count still comes from rag.top-k;
+# this controls how many vector candidates are sent into the reranker.
+retrieval:
+  candidate-top-k: 5
+
 # Reranker 重排序配置
 reranker:
   enabled: true  # 是否启用重排序
@@ -91,6 +96,9 @@ reranker:
   cache-enabled: true  # 是否启用重排序结果缓存
   top-k: 3  # 重排序后返回的最相关结果数量
   max-results-to-rerank: 50  # 最多重排序的结果数（性能优化）
+  max-sequence-length: 512
+  max-query-tokens: 128
+  max-document-tokens: 384
 
 # 土木实验监控系统配置
 experiment:

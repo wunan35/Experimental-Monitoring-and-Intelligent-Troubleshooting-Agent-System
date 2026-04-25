@@ -63,11 +63,16 @@ public class RerankerCacheService {
      */
     @SuppressWarnings("unchecked")
     public Optional<List<CachedRankResult>> getRerankResult(String query, int resultCount) {
+        return getRerankResult(query, resultCount, 0);
+    }
+
+    @SuppressWarnings("unchecked")
+    public Optional<List<CachedRankResult>> getRerankResult(String query, int resultCount, int topK) {
         if (redisTemplate == null) {
             return Optional.empty();
         }
 
-        String key = buildCacheKey(query, resultCount);
+        String key = buildCacheKey(query, resultCount, topK);
         try {
             Object cached = redisTemplate.opsForValue().get(key);
             if (cached != null) {
@@ -89,11 +94,15 @@ public class RerankerCacheService {
      * @param results 重排序结果
      */
     public void putRerankResult(String query, int resultCount, List<CachedRankResult> results) {
+        putRerankResult(query, resultCount, 0, results);
+    }
+
+    public void putRerankResult(String query, int resultCount, int topK, List<CachedRankResult> results) {
         if (redisTemplate == null || results == null || results.isEmpty()) {
             return;
         }
 
-        String key = buildCacheKey(query, resultCount);
+        String key = buildCacheKey(query, resultCount, topK);
         try {
             redisTemplate.opsForValue().set(
                 key,
@@ -114,9 +123,13 @@ public class RerankerCacheService {
      * 必须包含 resultCount，因为相同query但不同数量的结果，rerank后排序可能不同
      */
     private String buildCacheKey(String query, int resultCount) {
+        return buildCacheKey(query, resultCount, 0);
+    }
+
+    private String buildCacheKey(String query, int resultCount, int topK) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            String cacheInput = query + ":" + resultCount;
+            String cacheInput = query + ":" + resultCount + ":" + topK;
             byte[] hash = digest.digest(cacheInput.getBytes("UTF-8"));
             StringBuilder hexString = new StringBuilder();
             for (byte b : hash) {
@@ -127,7 +140,7 @@ public class RerankerCacheService {
             return CACHE_KEY_PREFIX + hexString;
         } catch (Exception e) {
             // 降级：使用哈希码
-            return CACHE_KEY_PREFIX + Math.abs((query + ":" + resultCount).hashCode());
+            return CACHE_KEY_PREFIX + Math.abs((query + ":" + resultCount + ":" + topK).hashCode());
         }
     }
 
