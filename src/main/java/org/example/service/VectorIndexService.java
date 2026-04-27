@@ -49,6 +49,12 @@ public class VectorIndexService {
     @Autowired
     private DocumentChunkConfig chunkConfig;
 
+    @Autowired
+    private DocumentParseService documentParseService;
+
+    @Autowired
+    private BM25Service bm25Service;
+
     @Value("${file.upload.path}")
     private String uploadPath;
 
@@ -138,9 +144,15 @@ public class VectorIndexService {
 
         logger.info("开始索引文件: {}", path);
 
-        // 1. 读取文件内容
-        String content = Files.readString(path);
-        logger.info("读取文件: {}, 内容长度: {} 字符", path, content.length());
+        // 1. 使用 Apache Tika 解析文件内容
+        String content;
+        try {
+            content = documentParseService.parseDocument(path);
+            logger.info("读取文件: {}, 内容长度: {} 字符", path, content.length());
+        } catch (Exception e) {
+            logger.error("文档解析失败: {}", path, e);
+            throw new RuntimeException("文档解析失败: " + e.getMessage(), e);
+        }
 
         // 2. 删除该文件的旧数据（如果存在）
         deleteExistingData(path.toString());
@@ -162,10 +174,10 @@ public class VectorIndexService {
 
         logger.info("文档分片完成: {} -> {} 个分片，策略: {}", filePath, chunks.size(), strategy);
 
-        // 4. 为每个分片生成向量并插入 Milvus
+        // 4. 为每个分片生成向量并插入 Milvus，同时同步到 BM25 索引
         for (int i = 0; i < chunks.size(); i++) {
             DocumentChunk chunk = chunks.get(i);
-            
+
             try {
                 // 生成向量
                 List<Float> vector = embeddingService.generateEmbedding(chunk.getContent());
@@ -175,7 +187,16 @@ public class VectorIndexService {
 
                 // 插入到 Milvus
                 insertToMilvus(chunk.getContent(), vector, metadata, chunk.getChunkIndex());
-                
+
+                // 同步到 BM25 索引（用于关键词检索）
+                String chunkId = (String) metadata.get("_source");
+                if (chunkId == null) {
+                    chunkId = path.toString() + "_" + chunk.getChunkIndex();
+                }
+                com.google.gson.Gson gson = new com.google.gson.Gson();
+                String metadataJson = gson.toJson(metadata);
+                bm25Service.addDocument(chunkId, chunk.getContent(), metadataJson);
+
                 logger.info("✓ 分片 {}/{} 索引成功", i + 1, chunks.size());
 
             } catch (Exception e) {
@@ -196,10 +217,10 @@ public class VectorIndexService {
             // 将系统路径转换为统一格式
             Path path = Paths.get(filePath).normalize();
             String normalizedPath = path.toString().replace(File.separator, "/");
-            
+
             // 构建删除表达式：metadata["_source"] == "xxx"
             String expr = String.format("metadata[\"_source\"] == \"%s\"", normalizedPath);
-            
+
             logger.info("准备删除旧数据，路径: {}, 表达式: {}", normalizedPath, expr);
 
             // 确保 collection 已加载（删除操作需要集合已加载）
@@ -228,6 +249,9 @@ public class VectorIndexService {
                 long deletedCount = response.getData().getDeleteCnt();
                 logger.info("✓ 已删除文件的旧数据: {}, 删除记录数: {}", normalizedPath, deletedCount);
             }
+
+            // 同步从 BM25 索引中删除旧文档
+            bm25Service.removeBySourcePrefix(normalizedPath);
 
         } catch (Exception e) {
             logger.warn("删除旧数据失败（可能是首次索引）: {}", e.getMessage());

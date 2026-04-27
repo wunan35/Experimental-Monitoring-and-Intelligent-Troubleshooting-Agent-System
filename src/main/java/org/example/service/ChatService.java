@@ -4,7 +4,7 @@ import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
-import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import org.example.exception.AgentException;
 import org.example.agent.tool.DateTimeTools;
 import org.example.agent.tool.InternalDocsTools;
 import org.example.agent.tool.QueryLogsTools;
@@ -138,13 +138,16 @@ public class ChatService {
         String basePrompt = promptService.getPrompt("chat-system");
         systemPromptBuilder.append(basePrompt).append("\n\n");
 
-        // 添加历史消息
+        // 添加历史消息（包括摘要和完整对话）
         if (!history.isEmpty()) {
             systemPromptBuilder.append("--- 对话历史 ---\n");
             for (Map<String, String> msg : history) {
                 String role = msg.get("role");
                 String content = msg.get("content");
-                if ("user".equals(role)) {
+                if ("system".equals(role)) {
+                    // 摘要消息直接追加（已包含【对话摘要】标题）
+                    systemPromptBuilder.append(content).append("\n");
+                } else if ("user".equals(role)) {
                     systemPromptBuilder.append("用户: ").append(content).append("\n");
                 } else if ("assistant".equals(role)) {
                     systemPromptBuilder.append("助手: ").append(content).append("\n");
@@ -212,11 +215,15 @@ public class ChatService {
      * @param question 用户问题
      * @return AI 回复
      */
-    public String executeChat(ReactAgent agent, String question) throws GraphRunnerException {
+    public String executeChat(ReactAgent agent, String question) throws AgentException {
         logger.info("执行 ReactAgent.call() - 自动处理工具调用");
-        var response = agent.call(question);
-        String answer = response.getText();
-        logger.info("ReactAgent 对话完成，答案长度: {}", answer.length());
-        return answer;
+        try {
+            var response = agent.call(question);
+            String answer = response.getText();
+            logger.info("ReactAgent 对话完成，答案长度: {}", answer.length());
+            return answer;
+        } catch (Exception e) {
+            throw new AgentException("ReactAgent execution failed", e);
+        }
     }
 }

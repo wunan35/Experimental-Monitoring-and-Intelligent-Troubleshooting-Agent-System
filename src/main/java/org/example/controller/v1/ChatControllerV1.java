@@ -8,7 +8,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.streaming.OutputType;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
-import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import org.example.exception.AgentException;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 import jakarta.validation.Valid;
@@ -19,6 +19,8 @@ import org.example.exception.SessionException;
 import org.example.exception.ToolExecutionException;
 import org.example.service.AiOpsService;
 import org.example.service.ChatService;
+import org.example.service.ConversationMemoryService;
+import org.example.service.IntentRoutingService;
 import org.example.service.SseHeartbeatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +53,12 @@ public class ChatControllerV1 extends BaseApiController {
 
     @Autowired
     private ChatService chatService;
+
+    @Autowired
+    private ConversationMemoryService conversationMemoryService;
+
+    @Autowired
+    private IntentRoutingService intentRoutingService;
 
     @Autowired
     private ToolCallbackProvider tools;
@@ -89,22 +97,22 @@ public class ChatControllerV1 extends BaseApiController {
             logger.info("[V1] 收到对话请求 - SessionId: {}", request.getId());
 
             SessionData session = sessionStorageService.getOrCreateSession(request.getId());
-            List<Map<String, String>> history = convertToHistoryFormat(session);
+            List<Map<String, String>> history = conversationMemoryService.buildContext(session);
 
-            DashScopeApi dashScopeApi = chatService.createDashScopeApi();
-            DashScopeChatModel chatModel = chatService.createStandardChatModel(dashScopeApi);
-            chatService.logAvailableTools();
+            // 意图路由
+            IntentRoutingService.RouteResult routeResult = intentRoutingService.route(request.getQuestion(), history);
 
-            String systemPrompt = chatService.buildSystemPrompt(history);
-            ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
-            String fullAnswer = chatService.executeChat(agent, request.getQuestion());
+            String fullAnswer = routeResult.getAnswer();
+            if (!routeResult.isSuccess()) {
+                logger.warn("路由返回失败: {}", routeResult.getErrorMessage());
+            }
 
-            session.addMessagePair(request.getQuestion(), fullAnswer);
+            conversationMemoryService.addMessagePairAndCompress(session, request.getQuestion(), fullAnswer);
             sessionStorageService.saveSession(session);
 
             return success(ChatResponse.success(fullAnswer));
 
-        } catch (GraphRunnerException e) {
+        } catch (AgentException e) {
             logger.error("Agent执行失败", e);
             throw new ToolExecutionException("chat", "Agent执行失败", e);
         } catch (Exception e) {
@@ -134,7 +142,7 @@ public class ChatControllerV1 extends BaseApiController {
                 logger.info("[V1] 收到流式对话请求 - SessionId: {}", sessionId);
 
                 SessionData session = sessionStorageService.getOrCreateSession(sessionId);
-                List<Map<String, String>> history = convertToHistoryFormat(session);
+                List<Map<String, String>> history = conversationMemoryService.buildContext(session);
 
                 DashScopeApi dashScopeApi = chatService.createDashScopeApi();
                 DashScopeChatModel chatModel = chatService.createStandardChatModel(dashScopeApi);
@@ -170,7 +178,7 @@ public class ChatControllerV1 extends BaseApiController {
                     () -> {
                         try {
                             String fullAnswer = fullAnswerBuilder.toString();
-                            session.addMessagePair(request.getQuestion(), fullAnswer);
+                            conversationMemoryService.addMessagePairAndCompress(session, request.getQuestion(), fullAnswer);
                             sessionStorageService.saveSession(session);
                             sendSseDone(emitter);
                         } catch (IOException e) {

@@ -8,7 +8,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.streaming.OutputType;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
-import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import org.example.exception.AgentException;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 import io.swagger.v3.oas.annotations.Operation;
@@ -23,6 +23,7 @@ import org.example.exception.SessionException;
 import org.example.exception.ToolExecutionException;
 import org.example.service.AiOpsService;
 import org.example.service.ChatService;
+import org.example.service.ConversationMemoryService;
 import org.example.service.SseHeartbeatService;
 import org.example.service.storage.SessionStorageService;
 import org.slf4j.Logger;
@@ -62,6 +63,9 @@ public class ChatController {
 
     @Autowired
     private ChatService chatService;
+
+    @Autowired
+    private ConversationMemoryService conversationMemoryService;
 
     @Autowired
     private SessionStorageService sessionStorageService;
@@ -128,9 +132,10 @@ public class ChatController {
             // 获取或创建会话 - 使用存储服务
             SessionData session = sessionStorageService.getOrCreateSession(request.getId());
 
-            // 获取历史消息
-            List<Map<String, String>> history = convertToHistoryFormat(session);
-            logger.info("会话历史消息对数: {}", session.getMessagePairCount());
+            // 使用新的记忆服务获取历史消息（包含摘要和完整对话）
+            List<Map<String, String>> history = conversationMemoryService.buildContext(session);
+            logger.info("会话历史消息对数: {}, 摘要数: {}, 当前消息对: {}",
+                    session.getMessagePairCount(), session.getSummaries().size(), session.getMessageHistory().size());
 
             // 创建 DashScope API 和 ChatModel
             DashScopeApi dashScopeApi = chatService.createDashScopeApi();
@@ -150,15 +155,15 @@ public class ChatController {
             // 执行对话
             String fullAnswer = chatService.executeChat(agent, request.getQuestion());
 
-            // 更新会话历史
-            session.addMessagePair(request.getQuestion(), fullAnswer);
+            // 更新会话历史（使用新的记忆服务，自动处理压缩）
+            conversationMemoryService.addMessagePairAndCompress(session, request.getQuestion(), fullAnswer);
             sessionStorageService.saveSession(session);
-            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}",
-                session.getSessionId(), session.getMessagePairCount());
+            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}, 摘要数: {}",
+                session.getSessionId(), session.getMessagePairCount(), session.getSummaries().size());
 
             return ResponseEntity.ok(ApiResponse.success(ChatResponse.success(fullAnswer)));
 
-        } catch (GraphRunnerException e) {
+        } catch (AgentException e) {
             logger.error("Agent执行失败", e);
             throw new ToolExecutionException("chat", "Agent执行失败", e);
         } catch (Exception e) {
@@ -234,9 +239,10 @@ public class ChatController {
                 // 获取或创建会话 - 使用存储服务
                 SessionData session = sessionStorageService.getOrCreateSession(sessionId);
 
-                // 获取历史消息
-                List<Map<String, String>> history = convertToHistoryFormat(session);
-                logger.info("ReactAgent 会话历史消息对数: {}", session.getMessagePairCount());
+                // 使用新的记忆服务获取历史消息（包含摘要和完整对话）
+                List<Map<String, String>> history = conversationMemoryService.buildContext(session);
+                logger.info("ReactAgent 会话历史消息对数: {}, 摘要数: {}, 当前消息对: {}",
+                        session.getMessagePairCount(), session.getSummaries().size(), session.getMessageHistory().size());
 
                 // 创建 DashScope API 和 ChatModel
                 DashScopeApi dashScopeApi = chatService.createDashScopeApi();
@@ -260,7 +266,7 @@ public class ChatController {
                 Flux<NodeOutput> stream;
                 try {
                     stream = agent.stream(request.getQuestion());
-                } catch (GraphRunnerException e) {
+                } catch (AgentException e) {
                     throw new ToolExecutionException("chat_stream", "Agent流式执行失败", e);
                 }
 
@@ -320,11 +326,11 @@ public class ChatController {
                             logger.info("ReactAgent 流式对话完成 - SessionId: {}, 答案长度: {}",
                                 session.getSessionId(), fullAnswer.length());
 
-                            // 更新会话历史
-                            session.addMessagePair(request.getQuestion(), fullAnswer);
+                            // 更新会话历史（使用新的记忆服务，自动处理压缩）
+                            conversationMemoryService.addMessagePairAndCompress(session, request.getQuestion(), fullAnswer);
                             sessionStorageService.saveSession(session);
-                            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}",
-                                session.getSessionId(), session.getMessagePairCount());
+                            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}, 摘要数: {}",
+                                session.getSessionId(), session.getMessagePairCount(), session.getSummaries().size());
 
                             // 发送完成标记
                             emitter.send(SseEmitter.event()
@@ -409,7 +415,7 @@ public class ChatController {
                 Optional<OverAllState> overAllStateOptional;
                 try {
                     overAllStateOptional = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks);
-                } catch (GraphRunnerException e) {
+                } catch (AgentException e) {
                     throw new ToolExecutionException("ai_ops", "多Agent执行失败", e);
                 }
 

@@ -6,9 +6,11 @@ import lombok.Data;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -76,6 +78,9 @@ public class QueryMetricsTools {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Autowired
+    private org.example.service.metrics.AgentMetricsService metricsService;
+
     @Value("${experiment.data-source.url:http://localhost:8080/api/experiment/alerts}")
     private String experimentDataSourceUrl;
 
@@ -106,6 +111,8 @@ public class QueryMetricsTools {
             "Use this tool when you need to check what experiment anomalies are currently detected, " +
             "investigate alert conditions, or monitor experiment status.")
     public String queryExperimentAlerts() {
+        Timer.Sample toolTimer = metricsService.startTimer();
+        long startTime = System.currentTimeMillis();
         logger.info("开始查询土木实验活动告警, Mock模式: {}", mockEnabled);
 
         try {
@@ -168,8 +175,16 @@ public class QueryMetricsTools {
             return jsonResult;
 
         } catch (RuntimeException | java.io.IOException e) {
-            logger.error("查询实验告警失败", e);
+            Duration duration = Duration.ofMillis(System.currentTimeMillis() - startTime);
+            metricsService.recordToolDuration("queryExperimentAlerts", duration);
+            metricsService.recordToolError("queryExperimentAlerts", e.getClass().getSimpleName());
+            logger.error("查询实验告警失败，耗时: {}ms", duration.toMillis(), e);
             return buildErrorResponse("查询失败", e.getMessage());
+        } finally {
+            Duration duration = Duration.ofMillis(System.currentTimeMillis() - startTime);
+            metricsService.recordToolDuration("queryExperimentAlerts", duration);
+            metricsService.recordToolInvocation("queryExperimentAlerts", true);
+            metricsService.stopTimer(toolTimer, "tool.queryExperimentAlerts.duration");
         }
     }
 

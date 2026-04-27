@@ -134,8 +134,16 @@ public class RedisSessionStorage implements SessionStorageService {
 
     /**
      * 裁剪历史消息，保持最大窗口大小
+     * 注意：当使用混合记忆策略时，压缩逻辑由 ConversationMemoryService 处理，
+     * 此方法仅作为兜底保护，不应干扰正常的压缩流程
      */
     private void trimHistory(SessionData data) {
+        // 如果开启了摘要压缩功能，不再裁剪 messageHistory
+        // 因为 ConversationMemoryService 会自动管理 messageHistory 的大小
+        if (data.getSummaries() != null && !data.getSummaries().isEmpty()) {
+            // 已有摘要，说明使用了混合记忆策略，跳过裁剪
+            return;
+        }
         while (data.getMessageHistory().size() > properties.getMaxMessagePairs()) {
             data.getMessageHistory().remove(0);
         }

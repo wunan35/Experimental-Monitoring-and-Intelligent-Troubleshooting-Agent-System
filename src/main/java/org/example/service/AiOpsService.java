@@ -4,16 +4,21 @@ import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SupervisorAgent;
-import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import io.github.resilience4j.timelimiter.TimeLimiter;
+import org.example.exception.AgentException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * 土木实验智能监控服务
@@ -81,6 +86,13 @@ public class AiOpsService {
     @Autowired
     private PromptService promptService;
 
+    @Autowired
+    @Qualifier("agentExecutor")
+    private Executor agentExecutor;
+
+    @Autowired
+    private TimeLimiter agentTimeLimiter;
+
     /**
      * 执行 AI Ops 告警分析流程
      *
@@ -89,7 +101,7 @@ public class AiOpsService {
      * @return 分析结果状态
      * @throws GraphRunnerException 如果 Agent 执行失败
      */
-    public Optional<OverAllState> executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks) throws GraphRunnerException {
+    public Optional<OverAllState> executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks) throws AgentException {
         logger.info("开始执行土木实验监控多 Agent 协作流程");
 
         // 构建 Planner 和 Executor Agent
@@ -108,7 +120,31 @@ public class AiOpsService {
         String taskPrompt = "你是土木实验监控专家，接到了实验异常自动分析任务。请结合工具调用，执行**规划→执行→再规划**的闭环，并最终按照固定模板输出《实验异常分析报告》。禁止编造虚假数据，如连续多次查询失败需诚实反馈无法完成的原因。";
 
         logger.info("调用土木实验监控 Supervisor Agent 开始编排...");
-        return supervisorAgent.invoke(taskPrompt);
+
+        // 使用异步执行和超时控制
+        CompletableFuture<Optional<OverAllState>> future = CompletableFuture.supplyAsync(
+            () -> {
+                try {
+                    return supervisorAgent.invoke(taskPrompt);
+                } catch (Exception e) {
+                    throw new RuntimeException("SupervisorAgent invoke failed", e);
+                }
+            },
+            agentExecutor
+        );
+
+        try {
+            // 应用超时控制
+            return future.get(agentTimeLimiter.getTimeLimiterConfig().getTimeoutDuration().toMillis(),
+                             java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            logger.error("AI Ops 分析超时，超过 {} 毫秒", agentTimeLimiter.getTimeLimiterConfig().getTimeoutDuration().toMillis());
+            future.cancel(true);
+            throw new AgentException("AI Ops analysis timed out", e);
+        } catch (Exception e) {
+            logger.error("AI Ops 分析执行失败", e);
+            throw new AgentException("AI Ops analysis failed", e);
+        }
     }
 
     /**

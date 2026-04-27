@@ -152,6 +152,18 @@
             <version>1.18.0</version>
         </dependency>
 
+        <!-- Apache Tika - 文档解析（支持 PDF, DOC, DOCX, PPT, XLS 等格式） -->
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-core</artifactId>
+            <version>1.28.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parsers</artifactId>
+            <version>1.28.3</version>
+        </dependency>
+
         <!-- HuggingFace Tokenizers - 文本分词器 -->
         <dependency>
             <groupId>ai.djl.huggingface</groupId>

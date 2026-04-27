@@ -26,6 +26,18 @@ public class SessionStorageProperties {
     private long expireSeconds = 1800L;
 
     /**
+     * 本地存储过期时间（秒）
+     * 仅在 dual 模式下使用，默认4小时
+     */
+    private long localExpireSeconds = 14400L;
+
+    /**
+     * Redis存储过期时间（秒）
+     * 仅在 dual 模式下使用，默认3天
+     */
+    private long redisExpireSeconds = 259200L;
+
+    /**
      * Redis key前缀
      * 用于区分不同应用的会话
      */

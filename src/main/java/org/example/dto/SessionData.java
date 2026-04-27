@@ -37,6 +37,18 @@ public class SessionData implements Serializable {
     private long lastAccessTime;
 
     /**
+     * 历史对话摘要列表
+     * 存储被压缩的早期对话的摘要
+     */
+    private List<ConversationSummary> summaries = new ArrayList<>();
+
+    /**
+     * 累计对话轮数
+     * 用于追踪总对话轮数，便于生成摘要时确定轮数范围
+     */
+    private int totalRounds = 0;
+
+    /**
      * 消息对 - 用户消息和AI回复的组合
      */
     @Data
@@ -83,6 +95,7 @@ public class SessionData implements Serializable {
      */
     public void addMessagePair(String userMessage, String assistantMessage) {
         messageHistory.add(new MessagePair(userMessage, assistantMessage));
+        this.totalRounds++;
         this.lastAccessTime = System.currentTimeMillis();
     }
 
@@ -95,9 +108,12 @@ public class SessionData implements Serializable {
 
     /**
      * 清空历史消息
+     * 同时清除摘要和重置总轮数
      */
     public void clearHistory() {
         messageHistory.clear();
+        summaries.clear();
+        totalRounds = 0;
         this.lastAccessTime = System.currentTimeMillis();
     }
 
@@ -106,5 +122,12 @@ public class SessionData implements Serializable {
      */
     public int getMessagePairCount() {
         return messageHistory.size();
+    }
+
+    /**
+     * 获取总对话轮数
+     */
+    public int getTotalRounds() {
+        return totalRounds;
     }
 }

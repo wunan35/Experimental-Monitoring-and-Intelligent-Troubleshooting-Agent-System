@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 性能分析Appender - 记录慢查询 -->
+    <appender name="SLOW_QUERY" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/slow-query.log</file>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/slow-query.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- 性能分析Appender - 记录Agent执行 -->
+    <appender name="AGENT_PERFORMANCE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/agent-performance.log</file>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/agent-performance.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- 配置特定Logger -->
+    <logger name="org.example.service.AiOpsService" level="INFO" additivity="false">
+        <appender-ref ref="AGENT_PERFORMANCE"/>
+    </logger>
+
+    <logger name="org.example.service.ChatService" level="INFO" additivity="false">
+        <appender-ref ref="AGENT_PERFORMANCE"/>
+    </logger>
+
+    <logger name="org.example.agent.tool" level="WARN" additivity="false">
+        <appender-ref ref="SLOW_QUERY"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="AGENT_PERFORMANCE"/>
+    </root>
+</configuration>
