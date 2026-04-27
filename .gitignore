@@ -79,3 +79,29 @@ vector-database.yml
 *.keystore
 *.truststore
 *.cer
+
+### Environment Variables ###
+.env
+.env.*
+!.env.example
+
+### ONNX Models (大模型文件，不宜上传) ###
+onnx/**/*.onnx
+onnx/**/*.bin
+
+### Maven ###
+*.jar
+!pom.xml
+!src/**/pom.xml
+
+### Local Test Files ###
+test_tokenizer.py
+*.pyc
+__pycache__/
+.pytest_cache/
+
+### Application Specific ###
+*.pid
+server.pid
+heapdump.*
+*.hprof
